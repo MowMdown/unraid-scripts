@@ -7,11 +7,10 @@ SRC_ROOT="/mnt/user/data/torrents"
 DST_ROOT="/mnt/user/data/media"
 USR_POOL="cache"
 HASH_CACHE="/mnt/user/appdata/hardlinks.txt"
-FILE_EXTS="mkv"
 DRY_RUN="yes"
+REPORT_EVERY=250
 VERBOSE="no"
 DEBUG="yes"
-REPORT_EVERY=250
 MAX_PARALLEL_DISKS=4
 SRC_REL_PATH="${SRC_ROOT#/mnt/user/}"
 COUNTER_DIR="hardlink_counters.$$"
@@ -115,7 +114,7 @@ index_source_files() {
             file_metadata["$phys_path"]="${inode}|${size}|${disk_id}"
             ((scanned_src++))
             (( scanned_src % REPORT_EVERY == 0 )) && info "Indexed $scanned_src source files"
-        done < <(find "$dir" -type f \( $(printf -- '-iname "*.%s" -o ' $FILE_EXTS) -false \) -print0 2>/dev/null)
+        done < <(find "$dir" -type f -name '*.mkv' -print0 2>/dev/null)
     done
     [[ $scanned_src -eq 0 ]] && { warn "No source files found"; return 1; }
     info "Indexed $scanned_src source files"
@@ -141,7 +140,7 @@ scan_disk() {
             [[ "$disk" == "$dst_disk" ]] && continue
             try_match_candidates "$dst_phys_path" "$dst_phys_path" "$dst_size" "$dst_inode" "$dst_disk" "${torrent_by_size_disk[$key]}" "cross-disk"
         done
-    done < <(find "$disk_path" -type f \( $(printf -- '-iname "*.%s" -o ' $FILE_EXTS) -false \) -print0 2>/dev/null)
+    done < <(find "$disk_path" -type f -name '*.mkv' -print0 2>/dev/null)
 }
 process_destination_files() {
     info "Processing destination files from: $DST_ROOT"
