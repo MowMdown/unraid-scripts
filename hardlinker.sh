@@ -6,18 +6,17 @@ set -uo pipefail
 
 # Source directory containing the original files (torrents)
 # This is where your seeding torrents live - the "master copies"
-# Example: "/mnt/user/data/torrents" or "/mnt/disk1/torrents"
+# Example: "/mnt/user/data/torrents" or "/mnt/disk1/data/torrents"
 # The script will index all video files here and use them as hardlink sources
 SRC_ROOT="/mnt/user/data/torrents"
 
 # Destination directory to scan for duplicate files
 # This is typically your media library managed by Plex/Jellyfin/Emby
-# Example: "/mnt/user/data/media" or "/mnt/user/Movies"
-# The script will find duplicates here and replace them with hardlinks to SRC_ROOT
+# Example: "/mnt/user/data/media" or "/mnt/disk1/data/media"
+# The script will find duplicates here and replace them with hardlinks to SRC_ROOT's correspoding disk
 DST_ROOT="/mnt/user/data/media"
 
-# Space-separated list of Unraid cache/pool names to include in scans
-# Leave as just "cache" for default, or add custom pools like "cache nvme ssd"
+# Space-separated list of Unraid pool names to include in scans
 # Example: "cache" or "cache nvme" or "cache fastpool ssdcache"
 # Only needed if your shares use pools - the script auto-scans all disk1-diskN
 USR_POOL="cache"
@@ -42,14 +41,14 @@ REPORT_EVERY=250
 
 # Enable verbose logging - set to "yes" for detailed output, "no" for quiet
 # Shows informational messages about script progress
-# Example: VERBOSE="yes" (recommended) or VERBOSE="no" (minimal output)
-VERBOSE="yes"
+# Example: VERBOSE="yes" (agressive output) or VERBOSE="no" (recommended)
+VERBOSE="no"
 
 # Enable debug logging - set to "yes" for troubleshooting, "no" for normal operation
 # Shows detailed technical information useful for debugging issues
 # Example: DEBUG="yes" (when troubleshooting) or DEBUG="no" (normal runs)
 # Warning: Generates a lot of output
-DEBUG="yes"
+DEBUG="no"
 
 # Maximum number of disks to scan in parallel
 # Set to 0 for auto-detection (uses half of CPU cores)
