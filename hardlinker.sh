@@ -79,15 +79,16 @@ declare -A file_metadata
 # Counters
 scanned_src=0
 
-
 # LOGGING FUNCTIONS
 log() { [[ "$VERBOSE" == "yes" ]] && echo "[LOG] $*" >&2; }
 info() { echo "[INFO] $*"; }
 debug() { [[ "$DEBUG" == "yes" ]] && echo "[DEBUG] $*" >&2; }
 warn() { echo "[WARN] $*" >&2; }
 
+# UTILITY FUNCTIONS
 get_disk_id() {
     local path="$1"
+    
     # Only match /mnt/disk[0-9]+ (disk1, disk2, ... disk28, etc.)
     # Pools are handled separately via USR_POOL variable
     if [[ "$path" =~ ^/mnt/(disk[0-9]+)/ ]]; then
@@ -96,6 +97,7 @@ get_disk_id() {
     fi
     
     # Check if it's a pool from USR_POOL
+    local pool
     for pool in $USR_POOL; do
         if [[ "$path" =~ ^/mnt/${pool}/ ]]; then
             echo "$pool"
@@ -107,9 +109,8 @@ get_disk_id() {
     debug "Skipping unrecognized path: $path"
     return 1
 }
-# Hash cache functions
-declare -A hash_cache
 
+# HASH CACHE FUNCTIONS
 load_hash_cache() {
     [[ -f "$HASH_CACHE" ]] || return 0
     
@@ -192,6 +193,8 @@ get_hash() {
     echo "$hash"
     return 0
 }
+
+# PATH RESOLUTION
 resolve_scan_paths() {
     local root="$1"
     local -n out_paths=$2
@@ -237,6 +240,8 @@ resolve_scan_paths() {
     
     return 0
 }
+
+# SOURCE FILE INDEXING
 index_source_files() {
     info "Indexing source files from: $SRC_ROOT"
     
@@ -311,6 +316,8 @@ index_source_files() {
     
     return 0
 }
+
+# DESTINATION FILE SCANNING
 scan_disk() {
     local disk_path="$1"
     info "Scanning disk: $disk_path"
@@ -395,27 +402,6 @@ process_destination_files() {
     
     info "Will scan ${#scan_paths[@]} destination location(s)"
     
-    # Normalize to unique disk / pool roots
-    local disk_roots=()
-    declare -A seen_roots
-    
-    local p root
-    for p in "${scan_paths[@]}"; do
-        # Extract /mnt/diskX or /mnt/poolname
-        root=$(echo "$p" | cut -d/ -f1-3)
-        [[ -n "${seen_roots[$root]:-}" ]] && continue
-        [[ -d "$root" ]] || continue
-        seen_roots["$root"]=1
-        disk_roots+=("$root")
-    done
-    
-    (( ${#disk_roots[@]} == 0 )) && {
-        warn "No valid destination disks or pools found to scan"
-        return 1
-    }
-    
-    info "Scanning ${#disk_roots[@]} unique disk/pool location(s)"
-    
     # Auto-tune parallelism
     if (( MAX_PARALLEL_DISKS == 0 )); then
         # Disk I/O is bottleneck, not CPU
@@ -439,7 +425,7 @@ process_destination_files() {
     local active_jobs=0
     local failed_jobs=0
     
-    for disk_path in "${disk_roots[@]}"; do
+    for disk_path in "${scan_paths[@]}"; do
         [[ -d "$disk_path" ]] || { warn "Skipping missing path: $disk_path"; continue; }
         
         # Launch background job
@@ -474,7 +460,7 @@ process_destination_files() {
     return 0
 }
 
-
+# FILE MATCHING
 try_match_candidates() {
     local dst_phys_path="$1"
     local dst_size="$2"
@@ -565,6 +551,7 @@ try_match_candidates() {
     return $matched_any
 }
 
+# HARDLINK CREATION
 create_hardlink() {
     local dst_phys_path="$1"
     local src_path="$2"
@@ -655,6 +642,7 @@ create_hardlink() {
     return 0
 }
 
+# MAIN EXECUTION
 main() {
     info "=========================================="
     info "  Unraid Hardlink Optimizer"
