@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
+
+# Unraid Hardlink Detection & Linking Script
+
 set -uo pipefail
-SRC_ROOT="/mnt/disk1/data/torrents"
-DST_ROOT="/mnt/disk1/data/media"
+SRC_ROOT="/mnt/user/data/torrents"
+DST_ROOT="/mnt/user/data/media"
 USR_POOL="cache"
 HASH_CACHE="/mnt/user/appdata/hardlinks.txt"
 DRY_RUN="yes"
