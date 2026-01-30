@@ -13,7 +13,7 @@ SRC_ROOT="/mnt/user/data/torrents"
 # Destination directory to scan for duplicate files
 # This is typically your media library managed by Plex/Jellyfin/Emby
 # Example: "/mnt/user/data/media" or "/mnt/disk1/data/media"
-# "/mnt/user/data" here is also an acceptable as we will skip directories in "$SRC_ROOT" per disk
+# "/mnt/user/data" alone should be avoided as it will scan the $SRC_ROOT files which is undesirable
 # The script will find duplicates here and replace them with hardlinks to SRC_ROOT's correspoding disk
 DST_ROOT="/mnt/user/data/media"
 
@@ -55,7 +55,7 @@ DEBUG="no"
 # Set to 0 for auto-detection (uses half of CPU cores)
 # Example: 4 scans 4 disks at once, 0 auto-tunes, 1 for sequential scanning
 # Higher values speed up scanning but increase system load
-MAX_PARALLEL_DISKS=5
+MAX_PARALLEL_DISKS=1
 
 # Space-separated list of video file extensions to scan
 # Add or remove extensions based on your media library
