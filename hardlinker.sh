@@ -38,7 +38,7 @@ DRY_RUN="yes"
 # Lower number = more frequent updates but more output
 # Example: 250 reports every 250 files, 1000 for less verbose output
 # Useful for monitoring progress on large libraries
-REPORT_EVERY=1000
+REPORT_EVERY=250
 
 # Enable verbose logging - set to "yes" for detailed output, "no" for quiet
 # Shows informational messages about script progress
@@ -49,7 +49,7 @@ VERBOSE="no"
 # Shows detailed technical information useful for debugging issues
 # Example: DEBUG="yes" (when troubleshooting) or DEBUG="no" (normal runs)
 # Warning: Generates a lot of output
-DEBUG="yes"
+DEBUG="no"
 
 # Maximum number of disks to scan in parallel
 # Set to 0 for auto-detection (uses half of CPU cores)
