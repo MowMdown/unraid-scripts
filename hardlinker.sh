@@ -61,7 +61,7 @@ MAX_PARALLEL_DISKS=1
 # Add or remove extensions based on your media library
 # Example: "mkv mp4 avi" or "mkv mp4 avi mov m4v wmv flv"
 # Only files matching these extensions will be processed
-FILE_EXTENSIONS="mkv mp4 avi"
+FILE_EXTENSIONS="mkv"
 
 # INTERNAL VARIABLES (DO NOT MODIFY)
 SRC_REL_PATH="${SRC_ROOT#/mnt/user/}"
@@ -342,29 +342,33 @@ process_destination_files() {
     info "Processing destination files from: $DST_ROOT"
 
     local scan_paths=()
-    
-    # Determine relative path under /mnt/user/ or /mnt/ for pools/disks
-    local rel_dst
+
+    # Destination path resolution
     if [[ "$DST_ROOT" =~ ^/mnt/user/ ]]; then
         rel_dst="${DST_ROOT#/mnt/user/}"
+
+        for mount in "${!VALID_MOUNTS[@]}"; do
+            local path="/mnt/$mount/$rel_dst"
+            [[ -d "$path" ]] || continue
+
+            # Skip the source directories
+            if [[ "$SRC_ROOT" == "$path"* ]]; then
+                debug "Skipping source directory on mount: $path"
+                continue
+            fi
+
+            scan_paths+=("$path")
+            debug "Adding destination path to scan: $path"
+        done
     else
-        rel_dst="${DST_ROOT#/mnt/}"
+        [[ -d "$DST_ROOT" ]] || {
+            warn "Destination path does not exist: $DST_ROOT"
+            return 1
+        }
+
+        scan_paths+=("$DST_ROOT")
+        debug "Using physical destination path: $DST_ROOT"
     fi
-
-    # Build scan paths per validated mount/pool, only the relative destination path
-    for mount in "${!VALID_MOUNTS[@]}"; do
-        local path="/mnt/$mount/$rel_dst"
-        [[ -d "$path" ]] || continue
-
-        # Skip the source directories
-        if [[ "$SRC_ROOT" == "$path"* ]]; then
-            debug "Skipping source directory on mount: $path"
-            continue
-        fi
-
-        scan_paths+=("$path")
-        debug "Adding destination path to scan: $path"
-    done
 
     info "Will scan ${#scan_paths[@]} destination location(s)"
 
@@ -384,7 +388,6 @@ process_destination_files() {
     for disk_path in "${scan_paths[@]}"; do
         [[ -d "$disk_path" ]] || { warn "Skipping missing path: $disk_path"; continue; }
 
-        # Launch background job
         ( scan_disk "$disk_path" ) &
         ((active_jobs++))
 
@@ -398,7 +401,6 @@ process_destination_files() {
         done
     done
 
-    # Wait for remaining jobs
     while (( active_jobs > 0 )); do
         if wait -n; then
             ((active_jobs--))
