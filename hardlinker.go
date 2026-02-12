@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -361,12 +362,12 @@ func (h *Hardlinker) indexSourceFiles() error {
 }
 
 func (h *Hardlinker) scanSourceDirectory(dir string) error {
-	return filepath.WalkDir(dir, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
 
-		if info.IsDir() {
+		if d.IsDir() {
 			return nil
 		}
 
@@ -524,20 +525,16 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 
 	localCounter := 0
 
-	filepath.WalkDir(diskPath, func(dstPhysPath string, info os.FileInfo, err error) error {
+	filepath.WalkDir(diskPath, func(dstPhysPath string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 
 		// Prune source directory
-		if strings.HasPrefix(dstPhysPath, pruneDir) {
-			if info.IsDir() {
+		if d.IsDir() {
+			if strings.HasPrefix(dstPhysPath, pruneDir) {
 				return filepath.SkipDir
 			}
-			return nil
-		}
-
-		if info.IsDir() {
 			return nil
 		}
 
