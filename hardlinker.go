@@ -24,6 +24,7 @@ type Config struct {
 	HashCache      string
 	DryRun         bool
 	ReportEvery    int
+	ParallelDisks  int
 	Verbose        bool
 	Debug          bool
 	FileExtensions []string
@@ -44,8 +45,8 @@ type Hardlinker struct {
 	cfg               Config
 	validMounts       map[string]bool
 	torrentBySizeDisk map[string][]string
-	hashCache         map[string]string
-	fileMetadata      map[string]*FileMetadata
+	fileMetadata      sync.Map
+	hashCache         sync.Map
 	scannedSrc        int
 	mu                sync.RWMutex
 	hashCacheMu       sync.Mutex
@@ -58,8 +59,6 @@ func main() {
 		cfg:               cfg,
 		validMounts:       make(map[string]bool),
 		torrentBySizeDisk: make(map[string][]string),
-		hashCache:         make(map[string]string),
-		fileMetadata:      make(map[string]*FileMetadata),
 	}
 
 	if err := h.run(); err != nil {
@@ -77,6 +76,7 @@ func parseFlags() Config {
 	flag.StringVar(&cfg.HashCache, "cache", "/mnt/user/appdata/hardlinks.txt", "Path to hash cache file")
 	flag.BoolVar(&cfg.DryRun, "dry-run", true, "Dry run mode (no changes made)")
 	flag.IntVar(&cfg.ReportEvery, "report-every", 250, "Report progress every N files")
+	flag.IntVar(&cfg.ParallelDisks, "parallel-disks", 1, "Number of disks to scan concurrently")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging")
 	flag.BoolVar(&cfg.Debug, "debug", false, "Enable debug logging")
 	extsStr := flag.String("extensions", "mkv", "Space-separated file extensions to scan")
@@ -221,7 +221,7 @@ func (h *Hardlinker) loadHashCache() error {
 		}
 
 		key := fmt.Sprintf("%s|%s|%s", inode, size, mtime)
-		h.hashCache[key] = hash
+		h.hashCache.Store(key, hash)
 		count++
 	}
 
@@ -246,13 +246,10 @@ func (h *Hardlinker) getHash(filePath string, size int64) (string, error) {
 	mtime := stat.Mtim.Sec
 	cacheKey := fmt.Sprintf("%d|%d|%d", inode, size, mtime)
 
-	// Check cache first
-	h.hashCacheMu.Lock()
-	if cached, ok := h.hashCache[cacheKey]; ok {
-		h.hashCacheMu.Unlock()
-		return cached, nil
+	// Check cache first (sync.Map)
+	if val, ok := h.hashCache.Load(cacheKey); ok {
+		return val.(string), nil
 	}
-	h.hashCacheMu.Unlock()
 
 	// Compute hash
 	h.info("Computing hash: %s", filePath)
@@ -271,11 +268,11 @@ func (h *Hardlinker) getHash(filePath string, size int64) (string, error) {
 
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	// Store in cache
-	h.hashCacheMu.Lock()
-	h.hashCache[cacheKey] = hash
+	// Store in sync.Map
+	h.hashCache.Store(cacheKey, hash)
 
-	// Append to cache file
+	// Append to cache file safely
+	h.hashCacheMu.Lock()
 	if f, err := os.OpenFile(h.cfg.HashCache, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		fmt.Fprintf(f, "%d|%d|%d|%s\n", inode, size, mtime, hash)
 		f.Close()
@@ -408,16 +405,20 @@ func (h *Hardlinker) scanSourceDirectory(dir string) error {
 
 		// Build index
 		key := fmt.Sprintf("%d|%s", size, diskID)
+
+		// Append to torrentBySizeDisk under lock
 		h.mu.Lock()
 		h.torrentBySizeDisk[key] = append(h.torrentBySizeDisk[key], path)
-		h.fileMetadata[path] = &FileMetadata{
-			Inode:  inode,
-			Size:   size,
-			DiskID: diskID,
-		}
 		h.scannedSrc++
 		count := h.scannedSrc
 		h.mu.Unlock()
+
+		// Store file metadata in sync.Map (no lock needed)
+		h.fileMetadata.Store(path, &FileMetadata{
+			Inode:  inode,
+			Size:   size,
+			DiskID: diskID,
+		})
 
 		if count%h.cfg.ReportEvery == 0 {
 			h.info("Indexed %d source files", count)
@@ -432,6 +433,7 @@ func (h *Hardlinker) processDestinationFiles() (int, int, error) {
 
 	var scanPaths []string
 
+	// Resolve destination paths
 	if strings.HasPrefix(h.cfg.DstRoot, "/mnt/user/") {
 		relDst := strings.TrimPrefix(h.cfg.DstRoot, "/mnt/user/")
 
@@ -441,7 +443,6 @@ func (h *Hardlinker) processDestinationFiles() (int, int, error) {
 			if err != nil || !info.IsDir() {
 				continue
 			}
-
 			scanPaths = append(scanPaths, path)
 			h.debug("Adding destination path to scan: %s", path)
 		}
@@ -451,26 +452,49 @@ func (h *Hardlinker) processDestinationFiles() (int, int, error) {
 			h.warn("Destination path does not exist: %s", h.cfg.DstRoot)
 			return 0, 0, fmt.Errorf("destination path does not exist")
 		}
-
 		scanPaths = append(scanPaths, h.cfg.DstRoot)
 		h.debug("Using physical destination path: %s", h.cfg.DstRoot)
 	}
 
-	h.info("Will scan %d destination location(s)", len(scanPaths))
-	for i, p := range scanPaths {
-		h.debug("Destination %d: %s", i+1, p)
+	numDisks := len(scanPaths)
+	h.info("Will scan %d destination location(s)", numDisks)
+
+	if numDisks == 0 {
+		return 0, 0, fmt.Errorf("no destination paths found")
 	}
 
-	// Scan disks sequentially
+	// Validate ParallelDisks
+	if h.cfg.ParallelDisks < 1 {
+		h.cfg.ParallelDisks = 1
+	} else if h.cfg.ParallelDisks > numDisks {
+		h.cfg.ParallelDisks = numDisks
+	}
+
+	h.info("Scanning up to %d disks simultaneously", h.cfg.ParallelDisks)
+
+	// Semaphore and WaitGroup
+	sem := make(chan struct{}, h.cfg.ParallelDisks)
+	var wg sync.WaitGroup
+
 	for i, diskPath := range scanPaths {
-		h.info("Scanning disk %d of %d", i+1, len(scanPaths))
-		h.scanDisk(diskPath)
+		wg.Add(1)
+		go func(disk string, idx int) {
+			defer wg.Done()
+			sem <- struct{}{}           // acquire slot
+			defer func() { <-sem }()    // release slot
+
+			h.info("Scanning disk %d of %d: %s", idx+1, numDisks, disk)
+			h.scanDisk(disk)
+		}(diskPath, i)
 	}
 
-	// Calculate totals
+	wg.Wait() // wait for all scans to finish
+
+	// Collect totals
 	scannedDst := 0
 	matches := 0
 
+	// Read scanned counters
 	files, _ := filepath.Glob(filepath.Join(h.cfg.CounterDir, "scanned_dst_*"))
 	for _, file := range files {
 		data, err := os.ReadFile(file)
@@ -482,6 +506,7 @@ func (h *Hardlinker) processDestinationFiles() (int, int, error) {
 		}
 	}
 
+	// Read matches
 	matchFile := filepath.Join(h.cfg.CounterDir, "matches")
 	if data, err := os.ReadFile(matchFile); err == nil {
 		matches = strings.Count(string(data), "\n")
@@ -613,15 +638,13 @@ func (h *Hardlinker) tryMatchCandidates(dstPhysPath string, dstSize int64, dstIn
 			continue
 		}
 
-		// Get source metadata
-		h.mu.RLock()
-		srcMeta, ok := h.fileMetadata[srcPath]
-		h.mu.RUnlock()
-
+		// Load source metadata from sync.Map
+		val, ok := h.fileMetadata.Load(srcPath)
 		if !ok {
 			h.debug("Missing metadata for candidate: %s", srcPath)
 			continue
 		}
+		srcMeta := val.(*FileMetadata)
 
 		// Skip if already hardlinked
 		if srcMeta.Inode == dstInode && srcMeta.DiskID == dstDisk {
