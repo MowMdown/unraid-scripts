@@ -523,6 +523,12 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 	pruneDir := filepath.Join(diskPath, srcRel)
 	h.debug("Will prune source directory: %s", pruneDir)
 
+	// Get unique disk identifier for counter file
+	diskID, _ := h.getDiskID(diskPath)
+	if diskID == "" {
+		diskID = strings.ReplaceAll(diskPath, "/", "_")
+	}
+
 	localCounter := 0
 
 	filepath.WalkDir(diskPath, func(dstPhysPath string, d fs.DirEntry, err error) error {
@@ -616,8 +622,8 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 		return nil
 	})
 
-	// Write counter
-	counterFile := filepath.Join(h.cfg.CounterDir, fmt.Sprintf("scanned_dst_%s", filepath.Base(diskPath)))
+	// Write counter with unique disk identifier
+	counterFile := filepath.Join(h.cfg.CounterDir, fmt.Sprintf("scanned_dst_%s", diskID))
 	os.WriteFile(counterFile, []byte(fmt.Sprintf("%d\n", localCounter)), 0644)
 	h.info("Completed scan of %s (%d files)", diskPath, localCounter)
 }
