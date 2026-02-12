@@ -364,7 +364,7 @@ func (h *Hardlinker) indexSourceFiles() error {
 }
 
 func (h *Hardlinker) scanSourceDirectory(dir string) error {
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	return filepath.WalkDir(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Skip errors
 		}
@@ -499,7 +499,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 
 	localCounter := 0
 
-	filepath.Walk(diskPath, func(dstPhysPath string, info os.FileInfo, err error) error {
+	filepath.WalkDir(diskPath, func(dstPhysPath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
