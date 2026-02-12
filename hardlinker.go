@@ -578,7 +578,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 		sizeMB := (dstSize + 524288) / 1048576
 		h.log("Scanning: %s → size=%dMB, inode=%d, disk_id=%s", filepath.Base(dstPhysPath), sizeMB, dstInode, dstDisk)
 
-		// Try same-disk matches first
+		// --- Same-disk matches ---
 		sameDiskKey := fmt.Sprintf("%d|%s", dstSize, dstDisk)
 		h.mu.RLock()
 		if candidates, ok := h.torrentBySizeDisk[sameDiskKey]; ok {
@@ -588,9 +588,15 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 			h.mu.RUnlock()
 		}
 
-		// Try cross-disk matches
+		// --- Cross-disk matches (safe iteration) ---
 		h.mu.RLock()
-		for key, candidates := range h.torrentBySizeDisk {
+		keys := make([]string, 0, len(h.torrentBySizeDisk))
+		for k := range h.torrentBySizeDisk {
+			keys = append(keys, k)
+		}
+		h.mu.RUnlock()
+
+		for _, key := range keys {
 			parts := strings.Split(key, "|")
 			if len(parts) != 2 {
 				continue
@@ -603,11 +609,12 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 				continue
 			}
 
-			h.mu.RUnlock()
-			h.tryMatchCandidates(dstPhysPath, dstSize, dstInode, dstDisk, candidates, "cross-disk")
 			h.mu.RLock()
+			candidates := h.torrentBySizeDisk[key]
+			h.mu.RUnlock()
+
+			h.tryMatchCandidates(dstPhysPath, dstSize, dstInode, dstDisk, candidates, "cross-disk")
 		}
-		h.mu.RUnlock()
 
 		return nil
 	})
