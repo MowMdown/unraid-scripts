@@ -59,6 +59,8 @@ func main() {
 		cfg:               cfg,
 		validMounts:       make(map[string]bool),
 		torrentBySizeDisk: make(map[string][]string),
+		fileMetadata:      make(map[string]*FileMetadata),
+		hashCache:         make(map[string]string),
 	}
 
 	if err := h.run(); err != nil {
@@ -72,11 +74,11 @@ func parseFlags() Config {
 
 	flag.StringVar(&cfg.SrcRoot, "src", "/mnt/user/data/torrents", "Source directory containing original files")
 	flag.StringVar(&cfg.DstRoot, "dst", "/mnt/user/data/media", "Destination directory to scan for duplicates")
-	poolsStr := flag.String("pools", "cache", "Space-separated list of Unraid pool names")
-	flag.StringVar(&cfg.HashCache, "cache", "/mnt/user/appdata/hardlinks.txt", "Path to hash cache file")
+	poolsStr := flag.String("pools", "", "Space-separated list of Unraid pool names")
+	flag.StringVar(&cfg.HashCache, "hashcache", "/mnt/user/appdata/hardlinks.txt", "Path to hash cache file")
 	flag.BoolVar(&cfg.DryRun, "dry-run", true, "Dry run mode (no changes made)")
 	flag.IntVar(&cfg.ReportEvery, "report-every", 250, "Report progress every N files")
-	flag.IntVar(&cfg.ParallelDisks, "parallel-disks", 1, "Number of disks to scan concurrently")
+	flag.IntVar(&cfg.ParallelDisks, "parallel", 1, "Number of disks to scan concurrently")
 	flag.BoolVar(&cfg.Verbose, "verbose", false, "Enable verbose logging")
 	flag.BoolVar(&cfg.Debug, "debug", false, "Enable debug logging")
 	extsStr := flag.String("extensions", "mkv", "Space-separated file extensions to scan")
@@ -221,7 +223,10 @@ func (h *Hardlinker) loadHashCache() error {
 		}
 
 		key := fmt.Sprintf("%s|%s|%s", inode, size, mtime)
-		h.hashCache.Store(key, hash)
+
+		h.Lock()
+		h.hashCache[key] = hash
+		h.Unlock()
 		count++
 	}
 
@@ -246,9 +251,13 @@ func (h *Hardlinker) getHash(filePath string, size int64) (string, error) {
 	mtime := stat.Mtim.Sec
 	cacheKey := fmt.Sprintf("%d|%d|%d", inode, size, mtime)
 
-	// Check cache first (sync.Map)
-	if val, ok := h.hashCache.Load(cacheKey); ok {
-		return val.(string), nil
+	// Check cache first
+	h.RLock()
+	hash, ok := h.hashCache[cacheKey]
+	h.RUnlock()
+
+	if ok {
+		return hash, nil
 	}
 
 	// Compute hash
@@ -266,10 +275,12 @@ func (h *Hardlinker) getHash(filePath string, size int64) (string, error) {
 		return "", err
 	}
 
-	hash := hex.EncodeToString(hasher.Sum(nil))
+	hash = hex.EncodeToString(hasher.Sum(nil))
 
-	// Store in sync.Map
-	h.hashCache.Store(cacheKey, hash)
+	// Store in cache
+	h.Lock()
+	h.hashCache[cacheKey] = hash
+	h.Unlock()
 
 	// Append to cache file safely
 	h.Lock()
@@ -407,18 +418,20 @@ func (h *Hardlinker) scanSourceDirectory(dir string) error {
 		key := fmt.Sprintf("%d|%s", size, diskID)
 
 		// Append to torrentBySizeDisk under lock
-		h.mu.Lock()
+		h.Lock()
 		h.torrentBySizeDisk[key] = append(h.torrentBySizeDisk[key], path)
 		h.scannedSrc++
 		count := h.scannedSrc
 		h.Unlock()
 
-		// Store file metadata in sync.Map (no lock needed)
-		h.fileMetadata.Store(path, &FileMetadata{
+		// Store file metadata
+		h.Lock()
+		h.fileMetadata[path] = &FileMetadata{
 			Inode:  inode,
 			Size:   size,
 			DiskID: diskID,
-		})
+		}
+		h.Unlock()
 
 		if count%h.cfg.ReportEvery == 0 {
 			h.info("Indexed %d source files", count)
@@ -518,15 +531,17 @@ func (h *Hardlinker) processDestinationFiles() (int, int, error) {
 func (h *Hardlinker) scanDisk(diskPath string) {
 	h.info("Scanning disk: %s", diskPath)
 
-	srcRel := strings.TrimPrefix(h.cfg.SrcRoot, "/mnt/user/")
-	pruneDir := filepath.Join(diskPath, srcRel)
-	h.debug("Will prune source directory: %s", pruneDir)
-
-	// Get unique disk identifier for counter file
-	diskID, _ := h.getDiskID(diskPath)
-	if diskID == "" {
+	// Get the disk ID from the destination path being scanned
+	diskID, ok := h.getDiskID(diskPath)
+	if !ok {
+		h.warn("Cannot determine disk ID for: %s", diskPath)
 		diskID = strings.ReplaceAll(diskPath, "/", "_")
 	}
+
+	// Reconstruct the source path on this same disk
+	srcRel := strings.TrimPrefix(h.cfg.SrcRoot, "/mnt/user/")
+	pruneDir := filepath.Join("/mnt", diskID, srcRel)
+	h.debug("Will prune source directory: %s", pruneDir)
 
 	localCounter := 0
 
@@ -583,11 +598,11 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 		// --- Same-disk matches ---
 		sameDiskKey := fmt.Sprintf("%d|%s", dstSize, dstDisk)
 		h.RLock()
-		if candidates, ok := h.torrentBySizeDisk[sameDiskKey]; ok {
-			h.mu.RUnlock()
+		candidates, ok := h.torrentBySizeDisk[sameDiskKey]
+		h.RUnlock()
+
+		if ok {
 			h.tryMatchCandidates(dstPhysPath, dstSize, dstInode, dstDisk, candidates, "same-disk")
-		} else {
-			h.mu.RUnlock()
 		}
 
 		// --- Cross-disk matches (safe iteration) ---
@@ -596,7 +611,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 		for k := range h.torrentBySizeDisk {
 			keys = append(keys, k)
 		}
-		h.mu.RUnlock()
+		h.RUnlock()
 
 		for _, key := range keys {
 			parts := strings.Split(key, "|")
@@ -613,7 +628,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 
 			h.RLock()
 			candidates := h.torrentBySizeDisk[key]
-			h.mu.RUnlock()
+			h.RUnlock()
 
 			h.tryMatchCandidates(dstPhysPath, dstSize, dstInode, dstDisk, candidates, "cross-disk")
 		}
@@ -647,13 +662,15 @@ func (h *Hardlinker) tryMatchCandidates(dstPhysPath string, dstSize int64, dstIn
 			continue
 		}
 
-		// Load source metadata from sync.Map
-		val, ok := h.fileMetadata.Load(srcPath)
+		// Load source metadata
+		h.RLock()
+		srcMeta, ok := h.fileMetadata[srcPath]
+		h.RUnlock()
+
 		if !ok {
 			h.debug("Missing metadata for candidate: %s", srcPath)
 			continue
 		}
-		srcMeta := val.(*FileMetadata)
 
 		// Skip if already hardlinked
 		if srcMeta.Inode == dstInode && srcMeta.DiskID == dstDisk {
