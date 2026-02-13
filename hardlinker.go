@@ -43,14 +43,13 @@ type FileMetadata struct {
 
 // Hardlinker manages the hardlinking process
 type Hardlinker struct {
+	sync.RWMutex
 	cfg               Config
 	validMounts       map[string]bool
 	torrentBySizeDisk map[string][]string
-	fileMetadata      sync.Map
-	hashCache         sync.Map
+	fileMetadata      map[string]*FileMetadata
+	hashCache         map[string]string
 	scannedSrc        int
-	mu                sync.RWMutex
-	hashCacheMu       sync.Mutex
 }
 
 func main() {
@@ -273,12 +272,12 @@ func (h *Hardlinker) getHash(filePath string, size int64) (string, error) {
 	h.hashCache.Store(cacheKey, hash)
 
 	// Append to cache file safely
-	h.hashCacheMu.Lock()
+	h.Lock()
 	if f, err := os.OpenFile(h.cfg.HashCache, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		fmt.Fprintf(f, "%d|%d|%d|%s\n", inode, size, mtime, hash)
 		f.Close()
 	}
-	h.hashCacheMu.Unlock()
+	h.Unlock()
 
 	return hash, nil
 }
@@ -412,7 +411,7 @@ func (h *Hardlinker) scanSourceDirectory(dir string) error {
 		h.torrentBySizeDisk[key] = append(h.torrentBySizeDisk[key], path)
 		h.scannedSrc++
 		count := h.scannedSrc
-		h.mu.Unlock()
+		h.Unlock()
 
 		// Store file metadata in sync.Map (no lock needed)
 		h.fileMetadata.Store(path, &FileMetadata{
@@ -583,7 +582,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 
 		// --- Same-disk matches ---
 		sameDiskKey := fmt.Sprintf("%d|%s", dstSize, dstDisk)
-		h.mu.RLock()
+		h.RLock()
 		if candidates, ok := h.torrentBySizeDisk[sameDiskKey]; ok {
 			h.mu.RUnlock()
 			h.tryMatchCandidates(dstPhysPath, dstSize, dstInode, dstDisk, candidates, "same-disk")
@@ -592,7 +591,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 		}
 
 		// --- Cross-disk matches (safe iteration) ---
-		h.mu.RLock()
+		h.RLock()
 		keys := make([]string, 0, len(h.torrentBySizeDisk))
 		for k := range h.torrentBySizeDisk {
 			keys = append(keys, k)
@@ -612,7 +611,7 @@ func (h *Hardlinker) scanDisk(diskPath string) {
 				continue
 			}
 
-			h.mu.RLock()
+			h.RLock()
 			candidates := h.torrentBySizeDisk[key]
 			h.mu.RUnlock()
 
